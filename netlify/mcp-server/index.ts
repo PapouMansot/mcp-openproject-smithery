@@ -20,17 +20,33 @@ if (!OPENPROJECT_API_KEY || !OPENPROJECT_URL) {
   // For a serverless function, this might mean it fails on invocation if not caught earlier.
 }
 
-const openProjectApi = axios.create({
-  baseURL: `${OPENPROJECT_URL}/api/${OPENPROJECT_API_VERSION}`,
-  headers: {
-    // Ensure OPENPROJECT_API_KEY is a string before using it in Buffer.from
-    'Authorization': `Basic ${Buffer.from(`apikey:${OPENPROJECT_API_KEY || ""}`).toString('base64')}`,
-    'Content-Type': 'application/json'
-  }
-});
+let openProjectApi: any; // Define it here
+try {
+  console.log("[MCP Server Index] Attempting to create openProjectApi client...");
+  console.log(`[MCP Server Index] Env OPENPROJECT_API_KEY type: ${typeof OPENPROJECT_API_KEY}, value (partial): ${(OPENPROJECT_API_KEY || 'MISSING').substring(0,5)}...`);
+  console.log(`[MCP Server Index] Env OPENPROJECT_URL: ${OPENPROJECT_URL || 'MISSING'}`);
+  console.log(`[MCP Server Index] Env OPENPROJECT_API_VERSION: ${OPENPROJECT_API_VERSION || 'MISSING'}`);
+
+  openProjectApi = axios.create({
+    baseURL: `${OPENPROJECT_URL}/api/${OPENPROJECT_API_VERSION}`,
+    headers: {
+      'Authorization': `Basic ${Buffer.from(`apikey:${OPENPROJECT_API_KEY || ""}`).toString('base64')}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  console.log("[MCP Server Index] openProjectApi client created successfully.");
+} catch (e: any) {
+  console.error("[MCP Server Index] FATAL ERROR creating openProjectApi client:", e.message, e.stack);
+  // If this fails, the server is unusable for OpenProject tools.
+  // We might want to ensure openProjectApi is defined, or subsequent calls will fail.
+  openProjectApi = null; // or some other way to indicate failure
+}
 
 export const setupMCPServer = (): McpServer => {
-
+  if (!openProjectApi) {
+    console.error("[MCP Server Index - setupMCPServer] openProjectApi client was not initialized. OpenProject tools will fail.");
+    // Potentially throw an error or return a server instance that indicates this critical failure.
+  }
   const server = new McpServer(
     {
       name: "stateless-server",

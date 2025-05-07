@@ -1,3 +1,8 @@
+console.log("[MCP Server Function] Loading module...");
+console.log(`[MCP Server Function] Initial OPENPROJECT_API_KEY type: ${typeof process.env.OPENPROJECT_API_KEY}, value (partial): ${(process.env.OPENPROJECT_API_KEY || 'MISSING').substring(0, 5)}...`);
+console.log(`[MCP Server Function] Initial OPENPROJECT_URL: ${process.env.OPENPROJECT_URL || 'MISSING'}`);
+console.log(`[MCP Server Function] Initial OPENPROJECT_API_VERSION: ${process.env.OPENPROJECT_API_VERSION || 'MISSING'}`);
+
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { setupMCPServer } from "../mcp-server";
 import express from "express";
