@@ -1,4 +1,5 @@
 version: 1
-start:
+startCommand:
+  type: "http"
   command: ["python", "server.py"]
   port: 8000 
