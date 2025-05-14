@@ -1,5 +1,22 @@
 version: 1
 startCommand:
-  type: "http"
+  type: http
   command: ["node", "docker-express-server.js"]
-  port: 8000 
+  port: 8000
+  configSchema:
+    type: object
+    required: ["OPENPROJECT_API_KEY", "OPENPROJECT_URL"]
+    properties:
+      OPENPROJECT_API_KEY:
+        type: string
+        title: "OpenProject API Key"
+        description: "Your OpenProject API key"
+      OPENPROJECT_URL:
+        type: string
+        title: "OpenProject URL"
+        description: "The base URL of your OpenProject instance"
+      OPENPROJECT_API_VERSION:
+        type: string
+        title: "OpenProject API Version"
+        description: "API version (default: v3)"
+        default: "v3" 

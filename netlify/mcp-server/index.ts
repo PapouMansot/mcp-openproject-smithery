@@ -8,11 +8,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from 'axios';
 
-// Helper to create OpenProject API client only when needed
-function getOpenProjectApi() {
-  const OPENPROJECT_API_KEY = process.env.OPENPROJECT_API_KEY;
-  const OPENPROJECT_URL = process.env.OPENPROJECT_URL;
-  const OPENPROJECT_API_VERSION = process.env.OPENPROJECT_API_VERSION || "v3";
+// Helper to create OpenProject API client from config or env
+function getOpenProjectApi(config?: any) {
+  const OPENPROJECT_API_KEY = config?.OPENPROJECT_API_KEY || process.env.OPENPROJECT_API_KEY;
+  const OPENPROJECT_URL = config?.OPENPROJECT_URL || process.env.OPENPROJECT_URL;
+  const OPENPROJECT_API_VERSION = config?.OPENPROJECT_API_VERSION || process.env.OPENPROJECT_API_VERSION || "v3";
   if (!OPENPROJECT_API_KEY || !OPENPROJECT_URL) {
     throw new Error("Missing OpenProject environment variables (OPENPROJECT_API_KEY, OPENPROJECT_URL)");
   }
@@ -137,9 +137,9 @@ export const setupMCPServer = (): McpServer => {
       identifier: z.string().describe("Identifier of the project (unique)"),
       description: z.string().optional().describe("Optional description for the project"),
     },
-    async ({ name, identifier, description }): Promise<CallToolResult> => {
+    async ({ name, identifier, description }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.post('/projects', {
           name,
           identifier,
@@ -180,9 +180,9 @@ export const setupMCPServer = (): McpServer => {
       description: z.string().optional().describe("Optional description for the task"),
       type: z.string().default("/api/v3/types/1").describe("Type of the work package (e.g., /api/v3/types/1 for Task)"),
     },
-    async ({ projectId, subject, description, type }): Promise<CallToolResult> => {
+    async ({ projectId, subject, description, type }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.post(`/projects/${projectId}/work_packages`, {
           subject,
           description: { raw: description || "" },
@@ -227,9 +227,9 @@ export const setupMCPServer = (): McpServer => {
     {
       projectId: z.string().describe("The ID of the project to retrieve"),
     },
-    async ({ projectId }): Promise<CallToolResult> => {
+    async ({ projectId }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.get(`/projects/${projectId}`);
         return {
           content: [
@@ -264,9 +264,9 @@ export const setupMCPServer = (): McpServer => {
       pageSize: z.number().optional().describe("Number of projects per page"),
       offset: z.number().optional().describe("Page number to retrieve (1-indexed)")
     },
-    async ({ pageSize, offset }): Promise<CallToolResult> => {
+    async ({ pageSize, offset }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const params: any = {};
         if (pageSize) params.pageSize = pageSize;
         if (offset) params.offset = offset;
@@ -303,9 +303,9 @@ export const setupMCPServer = (): McpServer => {
     {
       taskId: z.string().describe("The ID of the task to retrieve"),
     },
-    async ({ taskId }): Promise<CallToolResult> => {
+    async ({ taskId }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.get(`/work_packages/${taskId}`);
         return {
           content: [
@@ -341,9 +341,9 @@ export const setupMCPServer = (): McpServer => {
       pageSize: z.number().optional().describe("Number of tasks per page"),
       offset: z.number().optional().describe("Page number to retrieve (1-indexed)")
     },
-    async ({ projectId, pageSize, offset }): Promise<CallToolResult> => {
+    async ({ projectId, pageSize, offset }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         let url = '/work_packages';
         const params: any = {};
         if (pageSize) params.pageSize = pageSize;
@@ -386,7 +386,7 @@ export const setupMCPServer = (): McpServer => {
       name: z.string().optional().describe("New name for the project"),
       description: z.string().optional().describe("New description for the project"),
     },
-    async (params): Promise<CallToolResult> => {
+    async (params, context): Promise<CallToolResult> => {
       const { projectId, ...updatePayload } = params;
       if (Object.keys(updatePayload).length === 0) {
         return {
@@ -399,7 +399,7 @@ export const setupMCPServer = (): McpServer => {
         }
       }
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.patch(`/projects/${projectId}`, updatePayload);
         return {
           content: [
@@ -436,7 +436,7 @@ export const setupMCPServer = (): McpServer => {
       subject: z.string().optional().describe("New subject/title for the task"),
       description: z.string().optional().describe("New description for the task (provide as raw text)"),
     },
-    async (params): Promise<CallToolResult> => {
+    async (params, context): Promise<CallToolResult> => {
       const { taskId, lockVersion, description, ...otherFields } = params;
       const updatePayload: any = { lockVersion, ...otherFields };
       if (description !== undefined) {
@@ -453,7 +453,7 @@ export const setupMCPServer = (): McpServer => {
         }
       }
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.patch(`/work_packages/${taskId}`, updatePayload);
         return {
           content: [
@@ -487,9 +487,9 @@ export const setupMCPServer = (): McpServer => {
     {
       projectId: z.string().describe("The ID of the project to delete"),
     },
-    async ({ projectId }): Promise<CallToolResult> => {
+    async ({ projectId }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         await openProjectApi.delete(`/projects/${projectId}`);
         return {
           content: [
@@ -529,9 +529,9 @@ export const setupMCPServer = (): McpServer => {
     {
       taskId: z.string().describe("The ID of the task to delete"),
     },
-    async ({ taskId }): Promise<CallToolResult> => {
+    async ({ taskId }, context): Promise<CallToolResult> => {
       try {
-        const openProjectApi = getOpenProjectApi();
+        const openProjectApi = getOpenProjectApi(context?.config);
         await openProjectApi.delete(`/work_packages/${taskId}`);
         return {
           content: [
