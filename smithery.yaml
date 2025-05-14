@@ -1,5 +1,5 @@
 version: 1
 startCommand:
   type: "http"
-  command: ["python", "server.py"]
+  command: ["node", "docker-express-server.js"]
   port: 8000 
