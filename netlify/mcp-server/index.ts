@@ -1,4 +1,5 @@
 import { z } from "zod";
+import axios from "axios";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CallToolResult,
@@ -6,15 +7,15 @@ import {
   ReadResourceResult,
   JSONRPCError,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios from 'axios';
 
-// Helper to create OpenProject API client from config or env
+// Helper to create OpenProject API client from config or env, never throws
 function getOpenProjectApi(config?: any) {
   const OPENPROJECT_API_KEY = config?.OPENPROJECT_API_KEY || process.env.OPENPROJECT_API_KEY;
   const OPENPROJECT_URL = config?.OPENPROJECT_URL || process.env.OPENPROJECT_URL;
   const OPENPROJECT_API_VERSION = config?.OPENPROJECT_API_VERSION || process.env.OPENPROJECT_API_VERSION || "v3";
   if (!OPENPROJECT_API_KEY || !OPENPROJECT_URL) {
-    throw new Error("Missing OpenProject environment variables (OPENPROJECT_API_KEY, OPENPROJECT_URL)");
+    // Do not throw, just return null
+    return null;
   }
   return axios.create({
     baseURL: `${OPENPROJECT_URL}/api/${OPENPROJECT_API_VERSION}`,
@@ -138,8 +139,18 @@ export const setupMCPServer = (): McpServer => {
       description: z.string().optional().describe("Optional description for the project"),
     },
     async ({ name, identifier, description }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.post('/projects', {
           name,
           identifier,
@@ -181,8 +192,18 @@ export const setupMCPServer = (): McpServer => {
       type: z.string().default("/api/v3/types/1").describe("Type of the work package (e.g., /api/v3/types/1 for Task)"),
     },
     async ({ projectId, subject, description, type }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.post(`/projects/${projectId}/work_packages`, {
           subject,
           description: { raw: description || "" },
@@ -228,8 +249,18 @@ export const setupMCPServer = (): McpServer => {
       projectId: z.string().describe("The ID of the project to retrieve"),
     },
     async ({ projectId }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.get(`/projects/${projectId}`);
         return {
           content: [
@@ -265,8 +296,18 @@ export const setupMCPServer = (): McpServer => {
       offset: z.number().optional().describe("Page number to retrieve (1-indexed)")
     },
     async ({ pageSize, offset }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const params: any = {};
         if (pageSize) params.pageSize = pageSize;
         if (offset) params.offset = offset;
@@ -304,8 +345,18 @@ export const setupMCPServer = (): McpServer => {
       taskId: z.string().describe("The ID of the task to retrieve"),
     },
     async ({ taskId }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.get(`/work_packages/${taskId}`);
         return {
           content: [
@@ -342,8 +393,18 @@ export const setupMCPServer = (): McpServer => {
       offset: z.number().optional().describe("Page number to retrieve (1-indexed)")
     },
     async ({ projectId, pageSize, offset }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         let url = '/work_packages';
         const params: any = {};
         if (pageSize) params.pageSize = pageSize;
@@ -387,6 +448,17 @@ export const setupMCPServer = (): McpServer => {
       description: z.string().optional().describe("New description for the project"),
     },
     async (params, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       const { projectId, ...updatePayload } = params;
       if (Object.keys(updatePayload).length === 0) {
         return {
@@ -399,7 +471,6 @@ export const setupMCPServer = (): McpServer => {
         }
       }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.patch(`/projects/${projectId}`, updatePayload);
         return {
           content: [
@@ -437,6 +508,17 @@ export const setupMCPServer = (): McpServer => {
       description: z.string().optional().describe("New description for the task (provide as raw text)"),
     },
     async (params, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       const { taskId, lockVersion, description, ...otherFields } = params;
       const updatePayload: any = { lockVersion, ...otherFields };
       if (description !== undefined) {
@@ -453,7 +535,6 @@ export const setupMCPServer = (): McpServer => {
         }
       }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         const response = await openProjectApi.patch(`/work_packages/${taskId}`, updatePayload);
         return {
           content: [
@@ -488,8 +569,18 @@ export const setupMCPServer = (): McpServer => {
       projectId: z.string().describe("The ID of the project to delete"),
     },
     async ({ projectId }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         await openProjectApi.delete(`/projects/${projectId}`);
         return {
           content: [
@@ -530,8 +621,18 @@ export const setupMCPServer = (): McpServer => {
       taskId: z.string().describe("The ID of the task to delete"),
     },
     async ({ taskId }, context): Promise<CallToolResult> => {
+      const openProjectApi = getOpenProjectApi(context?.config);
+      if (!openProjectApi) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
+            }
+          ]
+        };
+      }
       try {
-        const openProjectApi = getOpenProjectApi(context?.config);
         await openProjectApi.delete(`/work_packages/${taskId}`);
         return {
           content: [
