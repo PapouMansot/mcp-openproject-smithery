@@ -1,21 +1,26 @@
 {
-    "name": "netlify-example-express-mcp",
+    "name": "@smithery/mcp-openproject-smithery",
     "version": "1.0.0",
-    "description": "A site to show a MCP example using Netlify Functions and Express",
-    "author": "Netlify",
+    "description": "MCP server for interacting with OpenProject (Smithery Edition)",
+    "license": "MIT",
+    "author": "Jesse Bautista",
     "type": "module",
-    "license": "ISC",
+    "files": ["dist"],
+    "scripts": {
+        "build": "tsc",
+        "prepare": "npm run build",
+        "dev": "tsx watch src/index.ts",
+        "watch": "tsc --watch",
+        "start": "node dist/index.js"
+    },
     "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.10.2",
-        "@netlify/functions": "^2.5.1",
-        "@types/express": "^5.0.1",
+        "@modelcontextprotocol/sdk": "^1.11.0",
         "axios": "^1.6.8",
-        "express": "^5.1.0",
-        "fetch-to-node": "^2.0.0",
-        "serverless-http": "^3.2.0",
         "zod": "^3.24.3"
     },
     "devDependencies": {
-        "@types/node": "^20.12.2"
+        "@types/node": "^22",
+        "tsx": "^4.19.4",
+        "typescript": "^5.6.2"
     }
 }
