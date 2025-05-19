@@ -7,6 +7,8 @@ import {
   ReadResourceResult,
   JSONRPCError,
 } from "@modelcontextprotocol/sdk/types.js";
+import express, { Request, Response } from "express";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 // Helper to create OpenProject API client from config or env, never throws
 function getOpenProjectApi(config?: any) {
@@ -679,10 +681,6 @@ export const setupMCPServer = (): McpServer => {
   return server;
 };
 
-// --- HTTP Server Entrypoint ---
-import express from "express";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-
 const app = express();
 app.use(express.json());
 
@@ -693,13 +691,13 @@ const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefi
 mcpServer.connect(transport);
 
 // Mount the MCP server at /mcp
-app.all("/mcp", (req, res) => {
+app.all("/mcp", (req: Request, res: Response) => {
   // Pass the parsed body if available (for POST)
   transport.handleRequest(req, res, req.body);
 });
 
 // Health check endpoint
-app.get("/", (_req, res) => res.send("MCP OpenProject server is running!"));
+app.get("/", (_req: Request, res: Response) => res.send("MCP OpenProject server is running!"));
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
