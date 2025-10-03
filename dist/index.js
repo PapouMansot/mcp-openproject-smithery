@@ -1,6 +1,42 @@
 import { z } from "zod";
 import axios from "axios";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import express from "express";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+const missingConfigMessage = "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL.";
+const missingConfigResult = {
+    content: [
+        {
+            type: "text",
+            text: missingConfigMessage,
+        },
+    ],
+};
+const safeStringify = (value) => {
+    if (typeof value === "string") {
+        return value;
+    }
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return String(value);
+    }
+};
+const getErrorMessage = (error) => {
+    if (axios.isAxiosError(error)) {
+        const data = error.response?.data;
+        if (data !== undefined) {
+            return safeStringify(data);
+        }
+        return error.message;
+    }
+    if (error instanceof Error) {
+        return error.message;
+    }
+    return String(error);
+};
+const isNotFoundError = (error) => axios.isAxiosError(error) && error.response?.status === 404;
 // Helper to create OpenProject API client from config or env, never throws
 function getOpenProjectApi(config) {
     const OPENPROJECT_API_KEY = config?.OPENPROJECT_API_KEY || process.env.OPENPROJECT_API_KEY;
@@ -94,6 +130,31 @@ export const setupMCPServer = () => {
     });
     // --- OpenProject Tools ---
     // All OpenProject tools now lazy-load the API client and config
+    server.tool("openproject-list-users", "Lists all users in OpenProject", {
+        pageSize: z.number().optional(),
+        offset: z.number().optional(),
+    }, async (params, context) => {
+        const openProjectApi = getOpenProjectApi(context?.config);
+        if (!openProjectApi) {
+            return missingConfigResult;
+        }
+        try {
+            const response = await openProjectApi.get('/users', { params });
+            return {
+                content: [
+                    { type: "text", text: `Found ${response.data.count} users` },
+                    { type: "text", text: JSON.stringify(response.data) },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    { type: "text", text: `Error listing users: ${getErrorMessage(error)}` },
+                ],
+            };
+        }
+    });
     server.tool("openproject-create-project", "Creates a new project in OpenProject", {
         name: z.string().describe("Name of the project"),
         identifier: z.string().describe("Identifier of the project (unique)"),
@@ -102,14 +163,7 @@ export const setupMCPServer = () => {
         const { name, identifier, description } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             const response = await openProjectApi.post('/projects', {
@@ -131,7 +185,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -151,14 +205,7 @@ export const setupMCPServer = () => {
         const { projectId, subject, description, type } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             const response = await openProjectApi.post(`/projects/${projectId}/work_packages`, {
@@ -187,7 +234,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -204,14 +251,7 @@ export const setupMCPServer = () => {
         const { projectId } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             const response = await openProjectApi.get(`/projects/${projectId}`);
@@ -229,7 +269,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -247,14 +287,7 @@ export const setupMCPServer = () => {
         const { pageSize, offset } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             const params = {};
@@ -277,7 +310,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -294,14 +327,7 @@ export const setupMCPServer = () => {
         const { taskId } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             const response = await openProjectApi.get(`/work_packages/${taskId}`);
@@ -319,7 +345,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -338,14 +364,7 @@ export const setupMCPServer = () => {
         const { projectId, pageSize, offset } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             let url = '/work_packages';
@@ -372,7 +391,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -391,14 +410,7 @@ export const setupMCPServer = () => {
         const { projectId, name, description } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         const updatePayload = {};
         if (name)
@@ -431,7 +443,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -451,14 +463,7 @@ export const setupMCPServer = () => {
         const { taskId, lockVersion, subject, description } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         const updatePayload = { lockVersion };
         if (subject)
@@ -491,7 +496,7 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
+            const errorMsg = getErrorMessage(error);
             return {
                 content: [
                     {
@@ -508,14 +513,7 @@ export const setupMCPServer = () => {
         const { projectId } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             await openProjectApi.delete(`/projects/${projectId}`);
@@ -529,15 +527,15 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
-            if (error.response?.status === 404) {
+            const errorMsg = getErrorMessage(error);
+            if (isNotFoundError(error)) {
                 return {
                     content: [
                         {
                             type: "text",
-                            text: `Project with ID ${projectId} not found. It might have already been deleted.`
-                        }
-                    ]
+                            text: `Project with ID ${projectId} not found. It might have already been deleted.`,
+                        },
+                    ],
                 };
             }
             return {
@@ -556,14 +554,7 @@ export const setupMCPServer = () => {
         const { taskId } = params;
         const openProjectApi = getOpenProjectApi(context?.config);
         if (!openProjectApi) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "OpenProject configuration is missing. Please provide OPENPROJECT_API_KEY and OPENPROJECT_URL."
-                    }
-                ]
-            };
+            return missingConfigResult;
         }
         try {
             await openProjectApi.delete(`/work_packages/${taskId}`);
@@ -577,15 +568,15 @@ export const setupMCPServer = () => {
             };
         }
         catch (error) {
-            const errorMsg = error.message || (error.response?.data && JSON.stringify(error.response.data)) || "Unknown error";
-            if (error.response?.status === 404) {
+            const errorMsg = getErrorMessage(error);
+            if (isNotFoundError(error)) {
                 return {
                     content: [
                         {
                             type: "text",
-                            text: `Task with ID ${taskId} not found. It might have already been deleted.`
-                        }
-                    ]
+                            text: `Task with ID ${taskId} not found. It might have already been deleted.`,
+                        },
+                    ],
                 };
             }
             return {
@@ -600,3 +591,20 @@ export const setupMCPServer = () => {
     });
     return server;
 };
+const app = express();
+app.use(express.json());
+const mcpServer = setupMCPServer();
+const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+// Connect the MCP server to the transport
+mcpServer.connect(transport);
+// Mount the MCP server at /mcp
+app.all("/mcp", (req, res) => {
+    // Pass the parsed body if available (for POST)
+    transport.handleRequest(req, res, req.body);
+});
+// Health check endpoint
+app.get("/", (_req, res) => res.send("MCP OpenProject server is running!"));
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => {
+    console.log(`MCP server running on port ${PORT}`);
+});
