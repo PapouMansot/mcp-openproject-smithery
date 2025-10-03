@@ -131,7 +131,23 @@ export const setupMCPServer = (): McpServer => {
 
   // --- OpenProject Tools ---
   // All OpenProject tools now lazy-load the API client and config
-
+ server.tool("openproject-list-users", "Lists all users in OpenProject", {
+      pageSize: z.number().optional(),
+      offset: z.number().optional(),
+  }, async (params) => {
+      const openProjectApi = getOpenProjectApi();
+      try {
+          const response = await openProjectApi.get('/users', { params });
+          return {
+              content: [
+                  { type: "text", text: `Found ${response.data.count} users` },
+                  { type: "text", text: JSON.stringify(response.data) }
+              ],
+          };
+      } catch (error) {
+          return { content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+  });
   server.tool(
     "openproject-create-project",
     "Creates a new project in OpenProject",
