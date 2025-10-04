@@ -167,17 +167,27 @@ export const setupMCPServer = (): McpServer => {
       subject: z.string().describe("Subject/title of the task"),
       description: z.string().optional().describe("Optional description for the task"),
       type: z.string().default("/api/v3/types/1").describe("Type of the work package (e.g., /api/v3/types/1 for Task)"),
+      startDate: z.string().optional().describe("Start date in YYYY-MM-DD format"),
+      dueDate: z.string().optional().describe("Due date in YYYY-MM-DD format"),
     },
     withOpenProject(async (api, params: any) => {
-      const { projectId, subject, description, type } = params;
-      const response = await api.post(`/projects/${projectId}/work_packages`, {
+      const { projectId, subject, description, type, startDate, dueDate } = params;
+      
+      const payload: any = {
         subject,
         description: { raw: description || "" },
         _links: {
           type: { href: type },
           project: { href: `/api/v3/projects/${projectId}` },
         },
-      });
+      };
+
+      // Ajouter les dates si fournies (format API OpenProject v3)
+      if (startDate) payload.startDate = startDate;
+      if (dueDate) payload.dueDate = dueDate;
+
+      const response = await api.post(`/projects/${projectId}/work_packages`, payload);
+      
       return {
         content: [
           {
