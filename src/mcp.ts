@@ -13,6 +13,13 @@ import {
   missingConfigResult,
   getErrorMessage,
   isNotFoundError,
+  pageSizeSchema,
+  offsetSchema,
+  safeTruncate,
+  resolveByName,
+  guardUpload,
+  sha256Hex,
+  patchWithConflictRetry,
 } from "./helpers.js";
 import { logger } from "./logger.js";
 
@@ -116,17 +123,36 @@ export const setupMCPServer = (): McpServer => {
   // --- OpenProject tools (use withOpenProject to remove repetition) ---
   server.tool(
     "openproject-list-users",
-    "Lists all users in OpenProject",
+    "Lists users (concise). Returns nextOffset when truncated.",
     {
-      pageSize: z.number().optional(),
-      offset: z.number().optional(),
+      pageSize: pageSizeSchema.optional().describe("Number of users per page (max 100)"),
+      offset: offsetSchema.optional().describe("Page number to retrieve (1-indexed)"),
+      full: z.boolean().optional().default(false).describe("Return full payload if true"),
     },
-    withOpenProject(async (api, params) => {
-      const response = await api.get("/users", { params });
+    withOpenProject(async (api, { pageSize = 25, offset = 1, full = false }: any) => {
+      const resp = await api.get("/users", { params: { pageSize, offset } });
+      const els = resp.data?._embedded?.elements ?? [];
+
+      if (full) {
+        const nextOffset = els.length < pageSize ? null : offset + 1;
+        return {
+          content: [
+            { type: "text", text: `Users: ${els.length} (page=${offset}, size=${pageSize}) nextOffset=${nextOffset ?? "none"}` },
+            { type: "text", text: JSON.stringify({ items: els, nextOffset }) },
+          ],
+        };
+      }
+
+      const concise = els.map((u: any) => ({
+        id: u.id,
+        name: u.name ?? u._links?.self?.title ?? null,
+        login: u.login ?? null,
+      }));
+      const nextOffset = concise.length < pageSize ? null : offset + 1;
       return {
         content: [
-          { type: "text", text: `Found ${response.data.count} users` },
-          { type: "text", text: JSON.stringify(response.data) },
+          { type: "text", text: `Users: ${concise.length} (page=${offset}, size=${pageSize}) nextOffset=${nextOffset ?? "none"}` },
+          { type: "text", text: JSON.stringify({ items: concise, nextOffset }) },
         ],
       };
     })
@@ -139,14 +165,14 @@ export const setupMCPServer = (): McpServer => {
       name: z.string().describe("Name of the project"),
       identifier: z.string().describe("Identifier of the project (unique)"),
       description: z.string().optional().describe("Optional description for the project"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { name, identifier, description } = params;
-      const response = await api.post("/projects", {
-        name,
-        identifier,
-        description: description || "",
-      });
+      const { name, identifier, description, idempotencyKey } = params;
+      const config: any = {};
+      if (idempotencyKey) config.headers = { "Idempotency-Key": idempotencyKey };
+
+      const response = await api.post("/projects", { name, identifier, description: description || "" }, config);
       return {
         content: [
           {
@@ -167,32 +193,51 @@ export const setupMCPServer = (): McpServer => {
       subject: z.string().describe("Subject/title of the task"),
       description: z.string().optional().describe("Optional description for the task"),
       type: z.string().default("/api/v3/types/1").describe("Type of the work package (e.g., /api/v3/types/1 for Task)"),
-      startDate: z.string().optional().describe("Start date in YYYY-MM-DD format"),
-      dueDate: z.string().optional().describe("Due date in YYYY-MM-DD format"),
+      startDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "Date must be YYYY-MM-DD").optional().describe("Start date in YYYY-MM-DD format"),
+      dueDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "Date must be YYYY-MM-DD").optional().describe("Due date in YYYY-MM-DD format"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { projectId, subject, description, type, startDate, dueDate } = params;
-      
+      let { projectId, subject, description, type, startDate, dueDate, idempotencyKey } = params;
+
+      // Resolve projectId that might be an identifier string
+      let projectNumericId = projectId;
+      try {
+        // try direct get first (works if numeric id or identifier supported)
+        await api.get(`/projects/${projectId}`);
+      } catch (err) {
+        // fallback: try to find by identifier in project list
+        try {
+          const list = await api.get("/projects", { params: { pageSize: 100, offset: 1 } });
+          const found = (list.data?._embedded?.elements ?? []).find((p: any) => p.identifier === projectId || p.name === projectId);
+          if (found) projectNumericId = found.id;
+        } catch {
+          // ignore, will let post fail below
+        }
+      }
+
       const payload: any = {
         subject,
         description: { raw: description || "" },
         _links: {
           type: { href: type },
-          project: { href: `/api/v3/projects/${projectId}` },
+          project: { href: `/api/v3/projects/${projectNumericId}` },
         },
       };
 
-      // Ajouter les dates si fournies (format API OpenProject v3)
       if (startDate) payload.startDate = startDate;
       if (dueDate) payload.dueDate = dueDate;
 
-      const response = await api.post(`/projects/${projectId}/work_packages`, payload);
-      
+      const config: any = { headers: {} };
+      if (idempotencyKey) config.headers["Idempotency-Key"] = idempotencyKey;
+
+      const response = await api.post(`/projects/${projectNumericId}/work_packages`, payload, config);
+
       return {
         content: [
           {
             type: "text",
-            text: `Successfully created task: ${response.data.subject} (ID: ${response.data.id}) in project ${projectId}`,
+            text: `Successfully created task: ${response.data.subject} (ID: ${response.data.id}) in project ${projectNumericId}`,
           },
           { type: "text", text: JSON.stringify(response.data) },
         ],
@@ -245,6 +290,62 @@ export const setupMCPServer = (): McpServer => {
     })
   );
 
+  // Variant: iterate internally and return a compact array of projects only
+  server.tool(
+    "openproject-list-projects-all",
+    "Lists all projects (compact) by iterating pages internally and returning a concise array",
+    {
+      pageSize: pageSizeSchema.optional().describe("Page size for internal paging (max 100)"),
+    },
+    withOpenProject(async (api, params: any) => {
+      const per = params?.pageSize ?? 100;
+      let offset = 1;
+      const all: any[] = [];
+      while (true) {
+        const resp = await api.get("/projects", { params: { pageSize: per, offset } });
+        const els = resp.data?._embedded?.elements ?? [];
+        for (const p of els) {
+          all.push({
+            id: p.id,
+            name: p.name,
+            identifier: p.identifier,
+            status: p._links?.status?.title ?? null,
+          });
+        }
+        if (!els.length || els.length < per) break;
+        offset += els.length;
+      }
+      return {
+        content: [
+          { type: "text", text: `Projects: ${all.length} (fetched pagesize=${per})` },
+          { type: "text", text: JSON.stringify(all) },
+        ],
+      };
+    })
+  );
+
+  // Health check tool: verifies URL and auth by calling /users/me
+  server.tool(
+    "openproject-health",
+    "Checks OpenProject URL and authentication (/users/me)",
+    {},
+    withOpenProject(async (api) => {
+      try {
+        const resp = await api.get("/users/me");
+        const u = resp.data || {};
+        return {
+          content: [
+            { type: "text", text: `OK: user=${u.login ?? u.name ?? u.id ?? "<unknown>"}` },
+            { type: "text", text: JSON.stringify({ id: u.id ?? null, name: u.name ?? null, login: u.login ?? null }) },
+          ],
+        };
+      } catch (err: unknown) {
+        const short = getErrorMessage(err);
+        return { content: [{ type: "text", text: `ERROR: ${short}` }] };
+      }
+    })
+  );
+
   server.tool(
     "openproject-get-task",
     "Gets a specific task (work package) by its ID from OpenProject",
@@ -263,28 +364,46 @@ export const setupMCPServer = (): McpServer => {
     })
   );
 
-  server.tool(
+server.tool(
     "openproject-list-tasks",
-    "Lists tasks (work packages) in OpenProject, optionally filtered by project ID",
+    "Lists tasks (concise). Default concise mapping; set full=true to return full payload. Returns nextOffset when truncated.",
     {
-      projectId: z.string().optional().describe("Optional ID of the project to filter tasks by"),
-      pageSize: z.number().optional().describe("Number of tasks per page"),
-      offset: z.number().optional().describe("Page number to retrieve (1-indexed)"),
+      projectId: z.string().optional(),
+      pageSize: pageSizeSchema.optional().describe("Number of tasks per page (max 100)"),
+      offset: offsetSchema.optional().describe("Page number to retrieve (1-indexed)"),
+      full: z.boolean().optional().default(false).describe("Return full payload if true"),
     },
-    withOpenProject(async (api, params: any) => {
-      const { projectId, pageSize, offset } = params;
-      let url = "/work_packages";
-      const qparams: any = {};
-      if (pageSize) qparams.pageSize = pageSize;
-      if (offset) qparams.offset = offset;
-      if (projectId) url = `/projects/${projectId}/work_packages`;
-      const response = await api.get(url, { params: qparams });
-      const count = response.data?._embedded?.elements?.length ?? 0;
-      const total = response.data?.total ?? "unknown";
+    withOpenProject(async (api, { projectId, pageSize = 25, offset = 1, full = false }: any) => {
+      const url = projectId ? `/projects/${projectId}/work_packages` : `/work_packages`;
+      const resp = await api.get(url, { params: { pageSize, offset } });
+      const els = resp.data?._embedded?.elements ?? [];
+
+      // If full requested, return the original elements and nextOffset
+      if (full) {
+        const nextOffset = els.length < pageSize ? null : offset + 1;
+        return {
+          content: [
+            { type: "text", text: `Tasks: ${els.length} (page=${offset}, size=${pageSize}) nextOffset=${nextOffset ?? "none"}` },
+            { type: "text", text: JSON.stringify({ items: els, nextOffset }) },
+          ],
+        };
+      }
+
+      const concise = els.map((w: any) => ({
+        id: w.id,
+        subject: w.subject,
+        startDate: w.startDate ?? null,
+        dueDate: w.dueDate ?? null,
+        status: w._links?.status?.title ?? null,
+        assignee: w._links?.assignee?.title ?? null,
+        priority: w._links?.priority?.title ?? null,
+        project: w._links?.project?.title ?? null,
+      }));
+      const nextOffset = concise.length < pageSize ? null : offset + 1;
       return {
         content: [
-          { type: "text", text: `Successfully retrieved ${count} tasks (Total: ${total})` },
-          { type: "text", text: JSON.stringify(response.data) },
+          { type: "text", text: `Tasks: ${concise.length} (page=${offset}, size=${pageSize}) nextOffset=${nextOffset ?? "none"}` },
+          { type: "text", text: JSON.stringify({ items: concise, nextOffset }) },
         ],
       };
     })
@@ -297,20 +416,24 @@ export const setupMCPServer = (): McpServer => {
       projectId: z.string().describe("The ID of the project to update"),
       name: z.string().optional().describe("New name for the project"),
       description: z.string().optional().describe("New description for the project"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { projectId, name, description } = params;
+      const { projectId, name, description, idempotencyKey } = params;
       const updatePayload: any = {};
       if (name) updatePayload.name = name;
       if (description) updatePayload.description = description;
       if (Object.keys(updatePayload).length === 0) {
         return {
           content: [
-            { type: "text", text: "Error: No fields provided to update for the project." },
+            { type: "text", text: "ERROR: no fields provided to update" },
           ],
         };
       }
-      const response = await api.patch(`/projects/${projectId}`, updatePayload);
+      const config: any = {};
+      if (idempotencyKey) config.headers = { "Idempotency-Key": idempotencyKey };
+
+      const response = await api.patch(`/projects/${projectId}`, updatePayload, config);
       return {
         content: [
           { type: "text", text: `Successfully updated project: ${response.data.name}` },
@@ -325,30 +448,38 @@ export const setupMCPServer = (): McpServer => {
     "Updates an existing task (work package) in OpenProject. Only include fields to be changed.",
     {
       taskId: z.string().describe("The ID of the task to update"),
-      lockVersion: z.number().describe("The lockVersion of the task (obtained from a GET request)"),
+      lockVersion: z.number().optional().describe("The lockVersion of the task (obtained from a GET request)"),
       subject: z.string().optional().describe("New subject/title for the task"),
       description: z.string().optional().describe("New description for the task (provide as raw text)"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { taskId, lockVersion, subject, description } = params;
-      const updatePayload: any = { lockVersion };
+      const { taskId, lockVersion, subject, description, idempotencyKey } = params;
+      const updatePayload: any = {};
+      if (lockVersion !== undefined) updatePayload.lockVersion = lockVersion;
       if (subject) updatePayload.subject = subject;
       if (description) updatePayload.description = { raw: description };
-      if (Object.keys(updatePayload).filter((k) => k !== "lockVersion").length === 0) {
+
+      if (Object.keys(updatePayload).length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "Error: No fields (besides lockVersion) provided to update for the task.",
+              text: "ERROR: no fields provided to update",
             },
           ],
         };
       }
-      const response = await api.patch(`/work_packages/${taskId}`, updatePayload);
+
+      const config: any = { headers: {} };
+      if (idempotencyKey) config.headers["Idempotency-Key"] = idempotencyKey;
+
+      // Use patchWithConflictRetry to handle 409 lockVersion automatically
+      const resp = await patchWithConflictRetry(api, `/work_packages/${taskId}`, `/work_packages/${taskId}`, updatePayload, config);
       return {
         content: [
-          { type: "text", text: `Successfully updated task: ${response.data.subject}` },
-          { type: "text", text: JSON.stringify(response.data) },
+          { type: "text", text: `Successfully updated task: ${resp.data?.subject ?? "<unknown>"}` },
+          { type: "text", text: JSON.stringify(resp.data) },
         ],
       };
     })
@@ -359,11 +490,14 @@ export const setupMCPServer = (): McpServer => {
     "Deletes a project from OpenProject. This action is irreversible.",
     {
       projectId: z.string().describe("The ID of the project to delete"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { projectId } = params;
+      const { projectId, idempotencyKey } = params;
       try {
-        await api.delete(`/projects/${projectId}`);
+        const config: any = {};
+        if (idempotencyKey) config.headers = { "Idempotency-Key": idempotencyKey };
+        await api.delete(`/projects/${projectId}`, config);
         return {
           content: [{ type: "text", text: `Successfully deleted project with ID: ${projectId}` }],
         };
@@ -388,11 +522,14 @@ export const setupMCPServer = (): McpServer => {
     "Deletes a task (work package) from OpenProject. This action is irreversible.",
     {
       taskId: z.string().describe("The ID of the task to delete"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { taskId } = params;
+      const { taskId, idempotencyKey } = params;
       try {
-        await api.delete(`/work_packages/${taskId}`);
+        const config: any = {};
+        if (idempotencyKey) config.headers = { "Idempotency-Key": idempotencyKey };
+        await api.delete(`/work_packages/${taskId}`, config);
         return {
           content: [{ type: "text", text: `Successfully deleted task with ID: ${taskId}` }],
         };
@@ -415,7 +552,7 @@ export const setupMCPServer = (): McpServer => {
   // --- Attachments tools ---
   server.tool(
     "openproject-upload-attachment",
-    "Uploads an attachment to an OpenProject resource. Provide `apiPath`, `filename`, and `contentBase64`.",
+    "Uploads an attachment to an OpenProject resource. Provide `apiPath`, `filename`, and `contentBase64`. Optional checksumSha256 to verify.",
     {
       apiPath: z
         .string()
@@ -423,19 +560,32 @@ export const setupMCPServer = (): McpServer => {
       filename: z.string().describe("Filename for the uploaded attachment"),
       contentBase64: z.string().describe("Base64-encoded file content"),
       contentType: z.string().optional().describe("MIME type").default("application/octet-stream"),
+      checksumSha256: z.string().optional().describe("Optional hex SHA-256 checksum to validate upload"),
+      idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      const { apiPath, filename, contentBase64, contentType } = params;
+      const { apiPath, filename, contentBase64, contentType, checksumSha256, idempotencyKey } = params;
+
+      // Guard upload early
+      const guarded = guardUpload(apiPath, contentBase64, contentType);
+      if (guarded) return guarded as CallToolResult;
+
       const buffer = Buffer.from(contentBase64, "base64");
+
+      // optional checksum verification
+      if (checksumSha256) {
+        const actual = sha256Hex(buffer);
+        if (actual !== checksumSha256.toLowerCase()) {
+          return { content: [{ type: "text", text: "ERROR: checksum mismatch" }] };
+        }
+      }
+
       try {
-        const url = `${apiPath}${apiPath.includes("?") ? "&" : "?"}filename=${encodeURIComponent(
-          filename
-        )}`;
-        const response = await api.post(url, buffer, {
-          headers: {
-            "Content-Type": contentType || "application/octet-stream",
-          },
-        });
+        const url = `${apiPath}${apiPath.includes("?") ? "&" : "?"}filename=${encodeURIComponent(filename)}`;
+        const headers: any = { "Content-Type": contentType || "application/octet-stream" };
+        if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+
+        const response = await api.post(url, buffer, { headers });
         return {
           content: [
             { type: "text", text: `Uploaded attachment ${filename}` },
@@ -444,7 +594,7 @@ export const setupMCPServer = (): McpServer => {
         };
       } catch (error: unknown) {
         const errorMsg = getErrorMessage(error);
-        return { content: [{ type: "text", text: `Error uploading attachment: ${errorMsg}` }] };
+        return { content: [{ type: "text", text: `ERROR: ${errorMsg}` }] };
       }
     })
   );
@@ -471,8 +621,172 @@ export const setupMCPServer = (): McpServer => {
         };
       } catch (error: unknown) {
         const errorMsg = getErrorMessage(error);
-        return { content: [{ type: "text", text: `Error downloading attachment: ${errorMsg}` }] };
+        return { content: [{ type: "text", text: `ERROR: ${errorMsg}` }] };
       }
+    })
+  );
+
+  // --- Search tasks ---
+  server.tool(
+    "openproject-search-tasks",
+    "Search tasks with simple filters (status, assignee, dueBefore, text). Returns concise items + nextOffset.",
+    {
+      projectId: z.string().optional().describe("Optional project ID to scope search"),
+      status: z.string().optional().describe("Status title to filter by"),
+      assignee: z.string().optional().describe("Assignee name to filter by"),
+      dueBefore: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "Date must be YYYY-MM-DD").optional().describe("Date must be YYYY-MM-DD"),
+      text: z.string().optional().describe("Substring to match in subject/description"),
+      pageSize: pageSizeSchema.optional(),
+      offset: offsetSchema.optional(),
+    },
+    withOpenProject(async (api, { projectId, status, assignee, dueBefore, text, pageSize = 25, offset = 1 }: any) => {
+      const url = projectId ? `/projects/${projectId}/work_packages` : `/work_packages`;
+      const resp = await api.get(url, { params: { pageSize, offset } });
+      const els = resp.data?._embedded?.elements ?? [];
+
+      // Client-side simple filters
+      const filtered = els.filter((w: any) => {
+        if (status && String(w._links?.status?.title ?? "").toLowerCase() !== String(status).toLowerCase()) return false;
+        if (assignee && String(w._links?.assignee?.title ?? "").toLowerCase() !== String(assignee).toLowerCase()) return false;
+        if (dueBefore && w.dueDate) {
+          if (w.dueDate >= dueBefore) return false;
+        }
+        if (text) {
+          const hay = `${w.subject ?? ""} ${(w.description?.raw) ?? ""}`.toLowerCase();
+          if (!hay.includes(String(text).toLowerCase())) return false;
+        }
+        return true;
+      });
+
+      const concise = filtered.map((w: any) => ({
+        id: w.id,
+        subject: w.subject,
+        startDate: w.startDate ?? null,
+        dueDate: w.dueDate ?? null,
+        status: w._links?.status?.title ?? null,
+        assignee: w._links?.assignee?.title ?? null,
+        priority: w._links?.priority?.title ?? null,
+        project: w._links?.project?.title ?? null,
+      }));
+
+      const nextOffset = concise.length < pageSize ? null : offset + 1;
+      return {
+        content: [
+          { type: "text", text: `Tasks: ${concise.length} (page=${offset}, size=${pageSize}) nextOffset=${nextOffset ?? "none"}` },
+          { type: "text", text: JSON.stringify({ items: concise, nextOffset }) },
+        ],
+      };
+    })
+  );
+
+  // --- Bulk update tasks ---
+  server.tool(
+    "openproject-bulk-update-tasks",
+    "Bulk update tasks. ops: [{id, lockVersion?, subject?, description?, statusName?, assigneeName?}]",
+    {
+      ops: z.array(z.object({
+        id: z.number().optional(),
+        lockVersion: z.number().optional(),
+        subject: z.string().optional(),
+        description: z.string().optional(),
+        statusName: z.string().optional(),
+        assigneeName: z.string().optional(),
+      })).describe("Array of operations"),
+    },
+    withOpenProject(async (api, params: any) => {
+      const { ops } = params;
+      const results: any[] = [];
+      for (const op of ops) {
+        try {
+          const payload: any = {};
+          if (op.subject) payload.subject = op.subject;
+          if (op.description) payload.description = { raw: op.description };
+          if (typeof op.lockVersion === "number") payload.lockVersion = op.lockVersion;
+
+          // Resolve statusName and assigneeName -> _links
+          if (op.statusName) {
+            const href = await resolveByName(api, "/statuses", op.statusName);
+            if (href) payload._links = payload._links || {}; payload._links.status = { href };
+          }
+          if (op.assigneeName) {
+            const href = await resolveByName(api, "/users", op.assigneeName);
+            if (href) payload._links = payload._links || {}; payload._links.assignee = { href };
+          }
+
+          if (!op.id) {
+            results.push({ op, error: "no id provided" });
+            continue;
+          }
+          if (Object.keys(payload).length === 0) {
+            results.push({ op, result: "noop" });
+            continue;
+          }
+
+          // Apply patch with conflict retry
+          const resp = await patchWithConflictRetry(api, `/work_packages/${op.id}`, `/work_packages/${op.id}`, payload);
+          results.push({ op, result: resp.data });
+        } catch (err) {
+          results.push({ op, error: getErrorMessage(err) });
+        }
+      }
+      return {
+        content: [
+          { type: "text", text: `Bulk update completed: ops=${ops.length}` },
+          { type: "text", text: JSON.stringify(results) },
+        ],
+      };
+    })
+  );
+
+  // --- list statuses/priorities/users (concise) ---
+  server.tool(
+    "openproject-list-statuses",
+    "Lists statuses (concise)",
+    {},
+    withOpenProject(async (api) => {
+      const r = await api.get("/statuses");
+      const els = r.data?._embedded?.elements ?? [];
+      const concise = els.map((s: any) => ({ id: s.id, name: s.name ?? s.title, href: s._links?.self?.href ?? null }));
+      return {
+        content: [
+          { type: "text", text: `Statuses: ${concise.length}` },
+          { type: "text", text: JSON.stringify(concise) },
+        ],
+      };
+    })
+  );
+
+  server.tool(
+    "openproject-list-priorities",
+    "Lists priorities (concise)",
+    {},
+    withOpenProject(async (api) => {
+      const r = await api.get("/priorities");
+      const els = r.data?._embedded?.elements ?? [];
+      const concise = els.map((s: any) => ({ id: s.id, name: s.name ?? s.title, href: s._links?.self?.href ?? null }));
+      return {
+        content: [
+          { type: "text", text: `Priorities: ${concise.length}` },
+          { type: "text", text: JSON.stringify(concise) },
+        ],
+      };
+    })
+  );
+
+  server.tool(
+    "openproject-list-users-concise",
+    "Lists users (concise) — alias for openproject-list-users with concise output",
+    {},
+    withOpenProject(async (api) => {
+      const r = await api.get("/users", { params: { pageSize: 100, offset: 1 } });
+      const els = r.data?._embedded?.elements ?? [];
+      const concise = els.map((u: any) => ({ id: u.id, name: u.name, login: u.login, href: u._links?.self?.href ?? null }));
+      return {
+        content: [
+          { type: "text", text: `Users: ${concise.length}` },
+          { type: "text", text: JSON.stringify(concise) },
+        ],
+      };
     })
   );
 
