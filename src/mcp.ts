@@ -187,7 +187,7 @@ export const setupMCPServer = (): McpServer => {
 
   server.tool(
     "openproject-create-task",
-    "Creates a new task (work package) in an OpenProject project",
+    "Creates a new task (work package) in an OpenProject project. Supports optional parentId/parentIdentifier to create a sub-task.",
     {
       projectId: z.string().describe("The ID or identifier of the project to add the task to"),
       subject: z.string().describe("Subject/title of the task"),
@@ -195,10 +195,11 @@ export const setupMCPServer = (): McpServer => {
       type: z.string().default("/api/v3/types/1").describe("Type of the work package (e.g., /api/v3/types/1 for Task)"),
       startDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "Date must be YYYY-MM-DD").optional().describe("Start date in YYYY-MM-DD format"),
       dueDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "Date must be YYYY-MM-DD").optional().describe("Due date in YYYY-MM-DD format"),
+      parentId: z.string().optional().describe("Optional parent work package ID or identifier (to create a sub-task)"),
       idempotencyKey: z.string().optional().describe("Optional Idempotency-Key header"),
     },
     withOpenProject(async (api, params: any) => {
-      let { projectId, subject, description, type, startDate, dueDate, idempotencyKey } = params;
+      let { projectId, subject, description, type, startDate, dueDate, parentId, idempotencyKey } = params;
 
       // Resolve projectId that might be an identifier string
       let projectNumericId = projectId;
@@ -225,14 +226,47 @@ export const setupMCPServer = (): McpServer => {
         },
       };
 
+      // Add dates if provided
       if (startDate) payload.startDate = startDate;
       if (dueDate) payload.dueDate = dueDate;
+
+      // Resolve parent if provided (accept ID or identifier/subject fallback within the project)
+      if (parentId) {
+        let parentNumericId: any = null;
+        // try direct GET (works if numeric id)
+        try {
+          const pResp = await api.get(`/work_packages/${parentId}`);
+          parentNumericId = pResp.data?.id ?? parentId;
+        } catch {
+          // fallback: try to find within project by subject or id string
+          try {
+            if (projectNumericId) {
+              const list = await api.get(`/projects/${projectNumericId}/work_packages`, { params: { pageSize: 100, offset: 1 } });
+              const els = list.data?._embedded?.elements ?? [];
+              const found = els.find((w: any) => String(w.id) === String(parentId) || String(w.subject) === String(parentId));
+              if (found) parentNumericId = found.id;
+            } else {
+              // as last resort, list global work_packages and search (limited)
+              const list = await api.get(`/work_packages`, { params: { pageSize: 100, offset: 1 } });
+              const els = list.data?._embedded?.elements ?? [];
+              const found = els.find((w: any) => String(w.id) === String(parentId) || String(w.subject) === String(parentId));
+              if (found) parentNumericId = found.id;
+            }
+          } catch {
+            // ignore resolution errors; let API return meaningful error if parent invalid
+          }
+        }
+        if (parentNumericId) {
+          payload._links.parent = { href: `/api/v3/work_packages/${parentNumericId}` };
+        }
+      }
 
       const config: any = { headers: {} };
       if (idempotencyKey) config.headers["Idempotency-Key"] = idempotencyKey;
 
       const response = await api.post(`/projects/${projectNumericId}/work_packages`, payload, config);
 
+      // concise success message
       return {
         content: [
           {
